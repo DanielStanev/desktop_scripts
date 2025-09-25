@@ -1,0 +1,273 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Getopt::Long;
+use File::Path qw(make_path);
+
+# Configuration file directory
+my $config_dir = "$ENV{HOME}/.config/monitor-configs";
+my $config_file = "$config_dir/configs.txt";
+
+# Command line options
+my $save_config;
+my $apply_config;
+my $list_configs;
+my $help;
+
+# Parse command line options
+GetOptions(
+    'save|s=i'    => \$save_config,
+    'apply|a=i'   => \$apply_config,
+    'list|l'      => \$list_configs,
+    'help|h'      => \$help,
+) or die "Error parsing command line options. Use --help for usage.\n";
+
+# Show help if requested or no options provided
+if ($help || (!$save_config && !$apply_config && !$list_configs)) {
+    show_help();
+    exit 0;
+}
+
+# Execute the requested action
+if ($save_config) {
+    save_configuration($save_config);
+} elsif ($apply_config) {
+    apply_configuration($apply_config);
+} elsif ($list_configs) {
+    list_configurations();
+}
+
+# Subroutines
+
+sub show_help {
+    print "mctrl - Monitor Control Script\n\n";
+    print "Usage:\n";
+    print "  mctrl -s <number>      Save current monitor configuration as <number>\n";
+    print "  mctrl --save <number>  Save current monitor configuration as <number>\n";
+    print "  mctrl -a <number>      Apply monitor configuration <number>\n";
+    print "  mctrl --apply <number> Apply monitor configuration <number>\n";
+    print "  mctrl -l, --list       List all saved configurations\n";
+    print "  mctrl -h, --help       Show this help message\n\n";
+    print "The configuration includes:\n";
+    print "  - Enable/disable status\n";
+    print "  - Resolution and refresh rate\n";
+    print "  - Position (x,y coordinates)\n";
+    print "  - Scale factor\n";
+    print "  - Rotation\n";
+    print "  - Priority\n";
+}
+
+sub save_configuration {
+    my ($config_num) = @_;
+
+    # Ensure config directory exists
+    make_path($config_dir) unless -d $config_dir;
+
+    # Get current monitor configuration
+    my $current_config = `kscreen-doctor -o 2>/dev/null`;
+    if ($? != 0) {
+        die "Error: Failed to get monitor configuration. Is kscreen-doctor installed?\n";
+    }
+
+    # Strip ANSI color codes
+    $current_config =~ s/\e\[[0-9;]*m//g;
+
+    # Parse the configuration to extract the command needed to recreate it
+    my @outputs = ();
+    my $current_output = {};
+
+    for my $line (split /\n/, $current_config) {
+        $line =~ s/^\s+|\s+$//g;  # trim whitespace
+
+        if ($line =~ /^Output: (\d+) (\S+)/) {
+            # Save previous output if exists
+            if (keys %$current_output) {
+                push @outputs, {%$current_output};
+            }
+
+            $current_output = {
+                id => $1,
+                name => $2,
+                enabled => 0,
+                geometry => '',
+                scale => 1,
+                rotation => 1,
+                mode => '',
+                priority => 0
+            };
+        }
+        elsif ($line eq 'enabled') {
+            $current_output->{enabled} = 1;
+        }
+        elsif ($line eq 'disabled') {
+            $current_output->{enabled} = 0;
+        }
+        elsif ($line =~ /^Geometry: (.+)$/) {
+            $current_output->{geometry} = $1;
+        }
+        elsif ($line =~ /^Scale: (.+)$/) {
+            $current_output->{scale} = $1;
+        }
+        elsif ($line =~ /^Rotation: (.+)$/) {
+            $current_output->{rotation} = $1;
+        }
+        elsif ($line =~ /^priority (\d+)$/) {
+            $current_output->{priority} = $1;
+        }
+        elsif ($line =~ /Modes:\s+(.+)$/) {
+            # Find the mode marked with * (current) or ! (preferred)
+            my $modes_line = $1;
+            if ($modes_line =~ /\d+:(\d+x\d+@\d+)[*!]/) {
+                $current_output->{mode} = $1;
+            }
+        }
+    }
+
+    # Don't forget the last output
+    if (keys %$current_output) {
+        push @outputs, {%$current_output};
+    }
+
+    # Generate kscreen-doctor command
+    my @cmd_parts = ();
+
+    for my $output (@outputs) {
+        my $output_name = "output.$output->{name}";
+
+        if ($output->{enabled}) {
+            push @cmd_parts, "$output_name.enable";
+            push @cmd_parts, "$output_name.mode.$output->{mode}" if $output->{mode};
+
+            # Handle position from geometry (format: "x,y widthxheight")
+            if ($output->{geometry} =~ /^(\d+),(\d+)\s+\d+x\d+$/) {
+                push @cmd_parts, "$output_name.position.$1,$2";
+            }
+
+            push @cmd_parts, "$output_name.scale.$output->{scale}" if $output->{scale} != 1;
+            push @cmd_parts, "$output_name.priority.$output->{priority}" if $output->{priority};
+
+            # Handle rotation (1=normal, 2=90°, 3=180°, 4=270°)
+            if ($output->{rotation} == 2) {
+                push @cmd_parts, "$output_name.rotation.left";
+            } elsif ($output->{rotation} == 3) {
+                push @cmd_parts, "$output_name.rotation.inverted";
+            } elsif ($output->{rotation} == 4) {
+                push @cmd_parts, "$output_name.rotation.right";
+            }
+        } else {
+            push @cmd_parts, "$output_name.disable";
+        }
+    }
+
+    my $kscreen_command = "kscreen-doctor " . join(" ", @cmd_parts);
+
+    print "Current monitor configuration command:\n";
+    print "$kscreen_command\n\n";
+
+    # Load existing configurations
+    my %configs = ();
+    if (-f $config_file) {
+        open my $fh, '<', $config_file or die "Cannot read config file: $!\n";
+        while (my $line = <$fh>) {
+            chomp $line;
+            if ($line =~ /^(\d+):\s*(.+)$/) {
+                $configs{$1} = $2;
+            }
+        }
+        close $fh;
+    }
+
+    # Check if configuration number already exists
+    if (exists $configs{$config_num}) {
+        print "Warning: Configuration $config_num already exists and will be overwritten.\n";
+        print "Previous: $configs{$config_num}\n";
+        print "New:      $kscreen_command\n\n";
+    }
+
+    # Save the configuration
+    $configs{$config_num} = $kscreen_command;
+
+    # Write all configurations back to file
+    open my $fh, '>', $config_file or die "Cannot write config file: $!\n";
+    for my $num (sort {$a <=> $b} keys %configs) {
+        print $fh "$num: $configs{$num}\n";
+    }
+    close $fh;
+
+    print "Configuration $config_num saved successfully!\n";
+    print "Use 'mctrl -a $config_num' to apply this configuration.\n";
+}
+
+sub apply_configuration {
+    my ($config_num) = @_;
+
+    # Check if config file exists
+    unless (-f $config_file) {
+        die "Error: No monitor configurations found.\nUse 'mctrl -s <number>' to save your first configuration.\n";
+    }
+
+    # Load configurations
+    my %configs = ();
+    open my $fh, '<', $config_file or die "Cannot read config file: $!\n";
+    while (my $line = <$fh>) {
+        chomp $line;
+        if ($line =~ /^(\d+):\s*(.+)$/) {
+            $configs{$1} = $2;
+        }
+    }
+    close $fh;
+
+    # Check if configuration exists
+    unless (exists $configs{$config_num}) {
+        die "Error: Configuration $config_num not found.\nUse 'mctrl -l' to see available configurations.\n";
+    }
+
+    # Get the command to execute
+    my $command = $configs{$config_num};
+
+    print "Applying monitor configuration $config_num...\n";
+    print "Command: $command\n";
+
+    # Execute the command
+    my $result = system($command);
+
+    if ($result == 0) {
+        print "Monitor configuration $config_num applied successfully!\n";
+    } else {
+        my $exit_code = $result >> 8;
+        die "Error: Failed to apply monitor configuration (exit code: $exit_code)\n";
+    }
+}
+
+sub list_configurations {
+    # Check if config file exists
+    unless (-f $config_file) {
+        print "No configurations saved.\n";
+        print "Use 'mctrl -s <number>' to save monitor configurations.\n";
+        return;
+    }
+
+    # Load configurations
+    my %configs = ();
+    open my $fh, '<', $config_file or die "Cannot read config file: $!\n";
+    while (my $line = <$fh>) {
+        chomp $line;
+        if ($line =~ /^(\d+):\s*(.+)$/) {
+            $configs{$1} = $2;
+        }
+    }
+    close $fh;
+
+    if (keys %configs == 0) {
+        print "No configurations saved.\n";
+        print "Use 'mctrl -s <number>' to save monitor configurations.\n";
+        return;
+    }
+
+    print "Saved monitor configurations:\n";
+    print "=" x 40 . "\n";
+    for my $num (sort {$a <=> $b} keys %configs) {
+        print "Configuration $num:\n";
+        print "  $configs{$num}\n\n";
+    }
+}
