@@ -1,7 +1,22 @@
 #!/usr/bin/perl
+
+=head1 mctl
+
+Monitor Control Script for KDE Plasma 6
+
+This script is designed specifically for my Arch Linux (I use arch btw) with KDE Plasma 6 setup in mind.
+Use caution when applying to other environments, although it should work on
+any OS using the KDE desktop environment with kscreen-doctor available.
+
+I like to use a binary numbering scheme for monitor configurations
+where each bit represents a monitor state. For example, configuration 6 (110)
+enables the middle and left monitors while disabling the right one.
+
+=cut
+
 use strict;
 use warnings;
-use Getopt::Long;
+use Getopt::Long qw(:config bundling);
 use File::Path qw(make_path);
 
 # Configuration file directory
@@ -13,13 +28,15 @@ my $save_config;
 my $apply_config;
 my $list_configs;
 my $help;
+my $overwrite;
 
 # Parse command line options
 GetOptions(
-    'save|s=i'    => \$save_config,
-    'apply|a=i'   => \$apply_config,
-    'list|l'      => \$list_configs,
-    'help|h'      => \$help,
+    'save|s=i'      => \$save_config,
+    'apply|a=i'     => \$apply_config,
+    'list|l'        => \$list_configs,
+    'help|h'        => \$help,
+    'overwrite|o'   => \$overwrite,
 ) or die "Error parsing command line options. Use --help for usage.\n";
 
 # Show help if requested or no options provided
@@ -30,7 +47,7 @@ if ($help || (!$save_config && !$apply_config && !$list_configs)) {
 
 # Execute the requested action
 if ($save_config) {
-    save_configuration($save_config);
+    save_configuration($save_config, $overwrite);
 } elsif ($apply_config) {
     apply_configuration($apply_config);
 } elsif ($list_configs) {
@@ -40,14 +57,15 @@ if ($save_config) {
 # Subroutines
 
 sub show_help {
-    print "mctrl - Monitor Control Script\n\n";
+    print "mctl - Monitor Control Script\n\n";
     print "Usage:\n";
-    print "  mctrl -s <number>      Save current monitor configuration as <number>\n";
-    print "  mctrl --save <number>  Save current monitor configuration as <number>\n";
-    print "  mctrl -a <number>      Apply monitor configuration <number>\n";
-    print "  mctrl --apply <number> Apply monitor configuration <number>\n";
-    print "  mctrl -l, --list       List all saved configurations\n";
-    print "  mctrl -h, --help       Show this help message\n\n";
+    print "  mctl -s <number>      Save current monitor configuration as <number>\n";
+    print "  mctl --save <number>  Save current monitor configuration as <number>\n";
+    print "  mctl -a <number>      Apply monitor configuration <number>\n";
+    print "  mctl --apply <number> Apply monitor configuration <number>\n";
+    print "  mctl -l, --list       List all saved configurations\n";
+    print "  mctl -o, --overwrite  Allow overwriting existing configurations\n";
+    print "  mctl -h, --help       Show this help message\n\n";
     print "The configuration includes:\n";
     print "  - Enable/disable status\n";
     print "  - Resolution and refresh rate\n";
@@ -58,7 +76,7 @@ sub show_help {
 }
 
 sub save_configuration {
-    my ($config_num) = @_;
+    my ($config_num, $overwrite_allowed) = @_;
 
     # Ensure config directory exists
     make_path($config_dir) unless -d $config_dir;
@@ -179,6 +197,12 @@ sub save_configuration {
 
     # Check if configuration number already exists
     if (exists $configs{$config_num}) {
+        if (!$overwrite_allowed) {
+            die "Error: Configuration $config_num already exists.\n" .
+                "Use --overwrite (-o) flag to overwrite existing configuration.\n" .
+                "Current configuration: $configs{$config_num}\n";
+        }
+
         print "Warning: Configuration $config_num already exists and will be overwritten.\n";
         print "Previous: $configs{$config_num}\n";
         print "New:      $kscreen_command\n\n";
@@ -195,7 +219,7 @@ sub save_configuration {
     close $fh;
 
     print "Configuration $config_num saved successfully!\n";
-    print "Use 'mctrl -a $config_num' to apply this configuration.\n";
+    print "Use 'mctl -a $config_num' to apply this configuration.\n";
 }
 
 sub apply_configuration {
@@ -203,7 +227,7 @@ sub apply_configuration {
 
     # Check if config file exists
     unless (-f $config_file) {
-        die "Error: No monitor configurations found.\nUse 'mctrl -s <number>' to save your first configuration.\n";
+        die "Error: No monitor configurations found.\nUse 'mctl -s <number>' to save your first configuration.\n";
     }
 
     # Load configurations
@@ -219,7 +243,7 @@ sub apply_configuration {
 
     # Check if configuration exists
     unless (exists $configs{$config_num}) {
-        die "Error: Configuration $config_num not found.\nUse 'mctrl -l' to see available configurations.\n";
+        die "Error: Configuration $config_num not found.\nUse 'mctl -l' to see available configurations.\n";
     }
 
     # Get the command to execute
@@ -243,7 +267,7 @@ sub list_configurations {
     # Check if config file exists
     unless (-f $config_file) {
         print "No configurations saved.\n";
-        print "Use 'mctrl -s <number>' to save monitor configurations.\n";
+        print "Use 'mctl -s <number>' to save monitor configurations.\n";
         return;
     }
 
@@ -260,7 +284,7 @@ sub list_configurations {
 
     if (keys %configs == 0) {
         print "No configurations saved.\n";
-        print "Use 'mctrl -s <number>' to save monitor configurations.\n";
+        print "Use 'mctl -s <number>' to save monitor configurations.\n";
         return;
     }
 
